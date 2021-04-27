@@ -1,0 +1,229 @@
+# Topic Classification Modelling with Top2Vec 
+
+The motivation for this project came because there is plenty of literature review about sensitive analysis (classifying text as positive, negative or neutral) for open text, but there is not too much for topic modelling. What we mean by this is an unsupervised model that can classify a text into different topics. 
+There is a very good package called Top2Vec that builds this model. 
+
+It was only released on 2020, but the algorithms used by Top2Vec are well-established — Doc2Vec, UMAP, HDBSCAN. It also supports the use of embedding models like Universal Sentence Encoder and BERT.
+
+The idea of this notebook is to explore how this package work and is able to classify open text from our customers reviews in the Nectar App. This data is collected in a weekly base by Piano and it is stored in an S3 bucket ( [path_customers_reviews](s3://piano-prod-7e939f93-customer-contact/v2Feedback/)) and we used all comments from October 2020 to April 2021.
+
+## Top2Vec: How it works 
+
+This package recognise the topic present in the text, it is an unsupervised learning so we do not have a training dataset that already contains the topic (label)  and  the number of topics in unkown. It does not requires the removal of stop words. There are three key steps for the model: 
+
+1. Transform the text to a numeric vector using Doc2Vec or a pre-trained model. Top2Vec will convert each document into a numeric representation (document vector) and it can do it from scratch using the algorithm Doc2Vec or with the pre-trained embedding models. The numeric representations are created such that the semantic contents of the documents are captured, and similar documents and words will be close to each other. 
+
+2. Create lower dimensional embedding of document vectors using UMAP (Uniform Manifold Approximation and Projection): dimension reduction helps for finding dense areas. 
+
+3. Clustering of documents to find topics using HDBSCAN (Hierarchical Density-Based Spatial Clustering of Applications with Noise): For each dense area, a topic vector is then obtained by calculating the  mean of all the document vectors in the same cluster (calculating the centroid) and then finally find n-closest word vectors to the resulting topic vector to assigned a topic number. 
+
+![number_reviews_day](images/centroid.png)
+
+
+## Summary of the data 
+
+We are analyzing customers reviews from October 2020 to April 2021, and we have aprox 14,700 reviews from 12869 customers (the data is at en externalHandle level). The following table shows the top 20 customers that are writing reviews between this period of time.
+  
+| externalHandle                       | count |
+|--------------------------------------|-------|
+| e6245f8e-a6f7-4f6f-acfa-9ed0d2e9dcb5 | 21    |
+| bd559115-7665-463b-9909-5ac84c52dfd0 | 20    |
+| 8eae3705-8ede-4334-ae45-2c3a1e6e853c | 19    |
+| 2b190a0c-b245-4279-8a83-4bf97e8ae2e0 | 13    |
+| 38177d6f-12b1-4610-a8b0-be649169e7dc | 13    |
+| ec2997a0-c079-45c6-9851-c819434b6c38 | 12    |
+| c4e42d3f-1c00-4730-b93c-bc3887eacb70 | 11    |
+| 1fdbce3b-5ac5-49b5-a523-abaa52f25a2f | 11    |
+| d6c9ba45-7143-4cf0-bc4f-238d486c1130 | 11    |
+| 3caef4ac-d8ef-481b-89bc-512d294d018d | 10    |
+| ac4e3f0b-0b5f-420a-8c34-3a2f907f3428 | 8     |
+| 796a2235-c894-4735-b1f3-5ae957e58eee | 8     |
+| c658d3a6-e579-4f06-b94b-0e3ac64f1711 | 8     |
+| 56a31cd8-155d-4b26-b995-a664059c758e | 7     |
+| f7a04d6b-e21e-40e6-9652-395df95238e3 | 7     |
+| d5c64272-e4a2-451d-88e5-9eeb1f093d5e | 6     |
+| c4cbd1bf-dfc0-4b16-a5ba-bf8cf6f3e5fd | 6     |
+| dd3f28f4-9a42-475f-bd0f-98e885f92b00 | 6     |
+| 82d2907e-4e8b-40a0-bf59-5b78c8818d19 | 6     |
+
+An example of the comments:
+- Comment 1:  
+`
+I cannot tell if my new nectar card is ready to use.  I have followed the instructions but y have had a"senior moment" . Please advise
+`
+- Comment 2:  
+`
+Very helpful lady on the line. Very pleased
+`
+
+
+In the following plot we can see how many reviews customers are writing every day. Basically we can observe that it fluctuates around 50 and 150 reviews per day, but to aggregate the data by day it is a bit noisy, so we also decided to plot the count of reviews by week.    
+![number_reviews_day](images/no_reviews_per_day.png)
+
+This plot shows the amount of reviews by week. In this case we can see that we had a big peak around Christmas and New Years, but reviews in the app have been decreasing over time. 
+
+![number_reviews_week](images/no_reviews_per_week_v2.png)
+
+It seemes that the most popular days of the week to write reviews are Wednesday and Thursday, and definitely customers are thinking on other things during the weekend.   
+
+![number_reviews_day](images/no_reviews_per_day_of_the_week.png)
+
+## Code
+### Train the Model 
+
+To train the model, we jus need to pass as an argument the list of reviews and defined the speed and workers. In this case, we decided to go with deep-learn because of the quality of the vectors. It took approx 12 min to train and make the classification of each document. 
+
+`model = Top2Vec(customers_reviews_list, speed="deep-learn", workers=8 )`
+
+
+- `documents`: Input corpus, should be a list of strings.
+- `speed`: This parameter will determine how fast the model takes to train. The `fast-learn` option is the fastest and will generate the lowest quality vectors. The `learn` option will learn better quality vectors but take a longer time to train. The `deep-learn` option will learn the best quality vectors but will take significant time to train.
+- `workers`: The amount of worker threads to be used in training the model. Larger amount will lead to faster training.
+
+The first time that we tried to train the model, we only used one week of data (approx 2,000 reviews) and the default for the embedding model was the `doc2vec`, which means that it will use their own data and start the model from scratch. This actually didn't work because a bigger amount of data was needed in order to at least capture 2 topics. For this reason, we decided to use more data (14,700 reviews) and we were able to find 122 topics.    
+
+There is an option to use pre-trained models (`embedding_mode`) for the word embedding. For large data sets and data sets with very unique vocabulary doc2vec could produce better results. This will train a doc2vec model from scratch. This method is language agnostic. However multiple languages will not be aligned. Using the universal sentence encoder options will be much faster since those are pre-trained and efficient models. The universal sentence encoder options are suggested for smaller data sets. They are also good options for large data sets that are in English or in languages covered by the multilingual model. It is also suggested for data sets that are multilingual.
+
+
+### Get the number of topics
+
+As mentioned before, Top2Vec will determine the number of topics based on the amount of documents that we pass to the model, in this case there were 117 topics detected.   
+
+`model.get_num_topics()`
+
+
+### Get the topics
+This will return the topics in decreasing size. The first variable, `topic_word`, is an array that for each topic will show the top 50 words, then `word_scores` is the cosine similarity scores of the top 50 words to the topic are returned and lastly `topic_nums` the unique index of every topic will be returned
+
+`topic_words, word_scores, topic_nums = model.get_topics(117)`
+
+The following is an example of the words that are contained in the second topic. We can infer that topic 2 has to do with inefficient use of time.  
+
+```
+topic_words[1] = ['chat', 'waiting', 'mins', 'waited', 'service', 'minutes',
+       'disconnected', 'speak', 'query', 'cut', 'rang', 'someone', 'hour',
+       'hold', 'queue', 'ring', 'contact', 'person', 'live', 'called',
+       'spoken', 'answer', 'wait', 'call', 'told', 'advised', 'complaint',
+       'sorted', 'technical', 'calls', 'services', 'helpful', 'spoke',
+       'telephone', 'line', 'contacted', 'she', 'resolve', 'sort',
+       'terrible', 'experience', 'hours', 'excellent', 'resolved',
+       'connected', 'team', 'andrea', 'response', 'questions', 'customer'] 
+```
+
+We can also see which are the documents/texts related to this topic. The following code will help us to actually check if the topics are related:  
+
+```
+documents, document_scores, document_ids = model.search_documents_by_topic(topic_num=1, num_docs=4)
+for doc, score, doc_id in zip(documents, document_scores, document_ids):
+    print(f"Document: {doc_id}, Score: {score}")
+    print("-----------")
+    print(doc)
+    print("-----------")
+    print()
+
+
+Document: 5121, Score: 0.6581567525863647
+-----------
+Absolutely disgusting 
+Can’t speak to anyone waited 30 mins still no answer
+Chat line said sorted problem  but wasn’t very disappointed ☹️ 
+-----------
+Document: 9327, Score: 0.6244161128997803
+-----------
+waited 20 mins to live chat about my missing points and then when it was my turn I was told no agent not happy
+-----------
+Document: 11245, Score: 0.6194978952407837
+-----------
+very helpful quick to sort out problem very polite happy to speak to this person thks for your help 
+-----------
+Document: 5160, Score: 0.5774666666984558
+-----------
+Unable to link nectar card with other companies and despite 2 calls holding on 12 and 10 minutes unable to get through. Live chat just referred to App. I explained as a disabled elderly person in was unable to get any help from you or your customer service.Call me on 01892 670572 or email me .I would like to speak to a human being.
+-----------
+
+```
+
+As we can observe, the four documents are actually talking about the use of time of our customers. In some cases was with a negative review but  Document: 11245 show us a positive review.  
+
+
+### Semantic Search: 
+### A) View the topics 
+
+Another useful feature from this package is that we can create wordcloud of the topics in order to make it easier to understand what is the topic about. With the following code we could print the topics from 86 to 89. 
+
+```
+for topic in topic_nums[86:90]:
+    model.generate_topic_wordcloud(topic, background_color="white")
+    plt.show()
+```
+
+This wordcloud is from the topic 86 and we can infer that is related to the discomfort around password, logging or signing in. 
+
+![number_reviews_day](images/topic_86.png)
+
+This are the examples of documents of Topic 86: 
+```
+Document: 11614, Score: 0.7322402000427246
+-----------
+I fin it always wants me to change my password, real pain makes access to site difficult.
+-----------
+Document: 12225, Score: 0.7062740325927734
+-----------
+each time I use the app I have to put in my nectar card number which is a pain 
+```
+
+### B) View the topics by key words 
+
+We can also create wordcloud using keywords, so in this example we were looking for topics related to offer and nice (we can have a list of keywords or only one).
+  
+```
+topic_words, word_scores, topic_scores, topic_nums = model.search_topics(keywords=["offer", "nice"], num_topics=5)
+for topic in topic_nums:
+    model.generate_topic_wordcloud(topic, background_color="white")
+    plt.show()
+```
+We are plotting two of the topics: 
+
+Examples of Topic 95: 
+This one we can see that is related to a nice shopping experience: 
+
+![number_reviews_day](images/topic_95.png)
+
+```
+Document: 13283, Score: 0.6762551069259644
+-----------
+Nice to get little rewards for shopping - and they mount up! The new app is a great improvement. 
+-----------
+Document: 1221, Score: 0.6733266115188599
+-----------
+Nice to get these weekly offers. Makes you concentrate on what you need.
+-----------
+Document: 8690, Score: 0.6265043020248413
+-----------
+Very nice and safe experience for early shopping with less crowd
+```
+
+This one we can see that is related to christmas and the the fruit and vegetable challenge. 
+![number_reviews_day](images/topic_32.png)
+
+Examples of Topic 32: 
+```
+Document: 1085, Score: 0.8755924105644226
+-----------
+Why have I not got all of my points for the fruit and veg challenge?  What a swizz that was !!!!!!
+-----------
+Document: 673, Score: 0.8653807640075684
+-----------
+I didn’t receive my 300 points for completing my fruit & veg challenge 
+-----------
+Document: 1323, Score: 0.86301189661026
+-----------
+still not received extra 200 points from fruit and veg challenge
+-----------
+Document: 818, Score: 0.8535330295562744
+-----------
+should have received 350 points for fruit and veg challenge,  only received 150
+```
+
+
+
